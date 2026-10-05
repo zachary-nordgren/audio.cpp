@@ -694,20 +694,13 @@ public:
             throw std::runtime_error("Mimi full decoder graph allocation failed");
         }
         core::write_tensor_f32(latents_bct_, std::vector<float>(static_cast<size_t>(config_.latent_size * steps_), 0.0F));
-        std::vector<int32_t> positions(static_cast<size_t>(transformed_frames_), 0);
+        positions_data_.resize(static_cast<size_t>(transformed_frames_));
         for (int64_t i = 0; i < transformed_frames_; ++i) {
-            positions[static_cast<size_t>(i)] = static_cast<int32_t>(i);
+            positions_data_[static_cast<size_t>(i)] = static_cast<int32_t>(i);
         }
-        core::write_tensor_i32(positions_, positions);
-        core::write_tensor_f32(
-            attention_mask_,
-            build_transformer_attention_mask(transformed_frames_, cache_steps_, 250, 0));
+        attention_mask_data_ = build_transformer_attention_mask(transformed_frames_, cache_steps_, 250, 0);
         if (cache_steps_ > 0) {
-            const std::vector<float> zero_prefix(static_cast<size_t>(cache_steps_ * config_.num_heads * head_dim_), 0.0F);
-            for (size_t layer = 0; layer < zero_prefix_keys_.size(); ++layer) {
-                core::write_tensor_f32(zero_prefix_keys_[layer], zero_prefix);
-                core::write_tensor_f32(zero_prefix_values_[layer], zero_prefix);
-            }
+            zero_prefix_data_.resize(static_cast<size_t>(cache_steps_ * config_.num_heads * head_dim_), 0.0F);
         }
         if (engine::core::uses_host_graph_plan(backend_)) {
             const auto plan_started = std::chrono::steady_clock::now();
@@ -738,6 +731,14 @@ public:
         if (static_cast<int64_t>(latents_bct.size()) != config_.latent_size * steps_) {
             throw std::runtime_error("Mimi full decoder runtime input size mismatch");
         }
+        // Graph-owned input storage can be reused by later nodes. Restore every
+        // input before executing a cached graph, not only the changing latents.
+        core::write_tensor_i32(positions_, positions_data_);
+        core::write_tensor_f32(attention_mask_, attention_mask_data_);
+        for (size_t layer = 0; layer < zero_prefix_keys_.size(); ++layer) {
+            core::write_tensor_f32(zero_prefix_keys_[layer], zero_prefix_data_);
+            core::write_tensor_f32(zero_prefix_values_[layer], zero_prefix_data_);
+        }
         core::write_tensor_f32(latents_bct_, latents_bct);
         engine::debug::timing_log_scalar("pocket_tts.mimi.full.single.graph.plan_create_ms", plan_create_ms_);
         engine::core::compute_backend_graph(backend_, graph_, plan_);
@@ -761,6 +762,9 @@ private:
     core::TensorValue latents_bct_;
     core::TensorValue positions_;
     core::TensorValue attention_mask_;
+    std::vector<int32_t> positions_data_;
+    std::vector<float> attention_mask_data_;
+    std::vector<float> zero_prefix_data_;
     std::vector<core::TensorValue> zero_prefix_keys_;
     std::vector<core::TensorValue> zero_prefix_values_;
     core::TensorValue output_;
